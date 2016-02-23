@@ -12,6 +12,7 @@ set(legion_HEADERS
   legion_c.h
   legion_c_util.h
   legion_config.h
+  legion_constraint.h
   legion_instances.h
   legion_ops.h
   legion_profiling.h
@@ -31,6 +32,7 @@ set(legion_SOURCES
   legion.cc
   legion_analysis.cc
   legion_c.cc
+  legion_constraint.cc
   legion_instances.cc
   legion_ops.cc
   legion_profiling.cc
@@ -51,13 +53,12 @@ target_include_directories(legion
     ${CMAKE_SOURCE_DIR}/runtime/mappers
     ${CMAKE_SOURCE_DIR}/runtime/realm)
 
-
 set ( PACKAGE_LIB_DESTINATION "${CMAKE_INSTALL_PREFIX}/lib")
 set ( PACKAGE_BIN_DESTINATION "${CMAKE_INSTALL_PREFIX}/bin")
-set ( PACKAGE_INCLUDE_DESTINATION "${CMAKE_INSTALL_PREFIX}/include")
+set ( PACKAGE_INCLUDE_DESTINATION "${CMAKE_INSTALL_PREFIX}/include/legion")
 
 
-install(TARGETS legion
+install(TARGETS legion EXPORT legion_TARGETS
   ARCHIVE DESTINATION ${PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${PACKAGE_BIN_DESTINATION}

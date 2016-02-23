@@ -10,6 +10,8 @@ set(realm_HEADERS
   cmdline.inl
   codedesc.h
   codedesc.inl
+  custom_serdez.h
+  custom_serdez.inl
   dynamic_table.h
   dynamic_table.inl
   event.h
@@ -102,9 +104,9 @@ target_include_directories(realm
 
 set ( PACKAGE_LIB_DESTINATION "${CMAKE_INSTALL_PREFIX}/lib")
 set ( PACKAGE_BIN_DESTINATION "${CMAKE_INSTALL_PREFIX}/bin")
-set ( PACKAGE_INCLUDE_DESTINATION "${CMAKE_INSTALL_PREFIX}/include")
+set ( PACKAGE_INCLUDE_DESTINATION "${CMAKE_INSTALL_PREFIX}/include/realm")
 
-install(TARGETS realm
+install(TARGETS realm EXPORT legion_TARGETS
   ARCHIVE DESTINATION ${PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${PACKAGE_BIN_DESTINATION}

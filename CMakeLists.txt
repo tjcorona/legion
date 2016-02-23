@@ -16,6 +16,8 @@
 
 project(legion)
 
+set(legion_VERSION 0.1)
+
 cmake_minimum_required(VERSION 2.8.12)
 
 #------------------------------------------------------------------------------#
@@ -66,17 +68,20 @@ endif(ENABLE_GASNET)
 #------------------------------------------------------------------------------#
 # LIBRARIES configuration
 #------------------------------------------------------------------------------#
+if (NOT APPLE)
 option(USE_LIBDL "Use libdl" ON)
 if (USE_LIBDL)
  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ldl")
 endif (USE_LIBDL)
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -lrt") 
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -lrt")
+endif()
+
 #------------------------------------------------------------------------------#
 # THREADS configuration
 #------------------------------------------------------------------------------#
 
-option(ENABLE_THREADS "Enable support for the CUDA runtime" ON)
+option(ENABLE_THREADS "Enable support for threads" ON)
 
 if(ENABLE_THREADS)
   find_package (Threads)
@@ -108,7 +113,7 @@ if(ENABLE_CUDA)
 
   CUDA_INCLUDE_DIRECTORIES( "${CMAKE_SOURCE_DIR}/runtime"
                          "${CMAKE_SOURCE_DIR}/runtime/legion"
-                         "${CMAKE_SOURCE_DIR}/runtime/mappers" 
+                         "${CMAKE_SOURCE_DIR}/runtime/mappers"
                          "${CMAKE_SOURCE_DIR}/runtime/realm")
 
   list(APPEND EXTRA_LIBS ${CUDA_CUDA_LIBRARY})
@@ -151,6 +156,60 @@ add_subdirectory(runtime)
 add_subdirectory(examples)
 option(BUILD_EXAMPLES "Build Legion examples" OFF)
 
+#------------------------------------------------------------------------------#
+# Config files
+#------------------------------------------------------------------------------#
+
+include(CMakePackageConfigHelpers)
+write_basic_package_version_file(
+  "${CMAKE_CURRENT_BINARY_DIR}/LegionConfigVersion.cmake"
+  VERSION ${legion_VERSION}
+  COMPATIBILITY AnyNewerVersion
+)
+
+export(EXPORT legion_TARGETS
+  FILE "${CMAKE_CURRENT_BINARY_DIR}/LegionTargets.cmake"
+  NAMESPACE Leigion::
+)
+
+set(LEGION_INCLUDE_DIRS
+  "${CMAKE_INSTALL_PREFIX}/include"
+  "${CMAKE_INSTALL_PREFIX}/include/legion"
+  "${CMAKE_INSTALL_PREFIX}/include/mappers"
+  "${CMAKE_INSTALL_PREFIX}/include/realm")
+
+configure_file(cmake/LegionConfig.cmake.in
+  ${CMAKE_CURRENT_BINARY_DIR}/LegionConfig.cmake
+  @ONLY IMMEDIATE
+)
+
+set(ConfigPackageLocation lib/cmake/Legion)
+install(EXPORT legion_TARGETS
+  FILE
+    LegionTargets.cmake
+  NAMESPACE
+    Legion::
+  DESTINATION
+    ${ConfigPackageLocation}
+)
+configure_file(
+  ${CMAKE_SOURCE_DIR}/CMake/LegionConfig.cmake.in
+  ${CMAKE_BINARY_DIR}/LegionConfig.cmake.install
+  @ONLY IMMEDIATE
+  )
+install(FILES ${CMAKE_BINARY_DIR}/LegionConfig.cmake.install
+  DESTINATION ${ConfigPackageLocation}
+  RENAME LegionConfig.cmake
+  )
+#install(
+#  FILES
+#    cmake/LegionConfig.cmake.in
+#    "${CMAKE_CURRENT_BINARY_DIR}/LegionConfigVersion.cmake"
+#  DESTINATION
+#    ${ConfigPackageLocation}
+#  COMPONENT
+#    Devel
+#)
 #------------------------------------------------------------------------------#
 # vim: set tabstop=2 shiftwidth=2 expandtab :
 #------------------------------------------------------------------------------#
