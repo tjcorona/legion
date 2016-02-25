@@ -3015,17 +3015,27 @@ function codegen.expr_region(cx, node)
        end)]
     [fs_naming_actions];
     var [lr] = c.legion_logical_region_create([cx.runtime], [cx.context], [is], [fs])
-    var il = c.legion_inline_launcher_create_logical_region(
-      [lr], c.READ_WRITE, c.EXCLUSIVE, [lr], 0, false, 0, 0);
-    [field_ids:map(
-       function(field_id)
-         return `(c.legion_inline_launcher_add_field(il, [field_id], true))
-       end)]
-    var [pr] = c.legion_inline_launcher_execute([cx.runtime], [cx.context], il)
-    c.legion_inline_launcher_destroy(il)
-    c.legion_physical_region_wait_until_valid([pr])
-    [pr_actions]
     var [r] = [region_type]{ impl = [lr] }
+  end
+  if not cx.task_meta:get_config_options().inner then
+    actions = quote
+      [actions];
+      var il = c.legion_inline_launcher_create_logical_region(
+        [lr], c.READ_WRITE, c.EXCLUSIVE, [lr], 0, false, 0, 0);
+      [field_ids:map(
+         function(field_id)
+           return `(c.legion_inline_launcher_add_field(il, [field_id], true))
+         end)]
+      var [pr] = c.legion_inline_launcher_execute([cx.runtime], [cx.context], il)
+      c.legion_inline_launcher_destroy(il)
+      c.legion_physical_region_wait_until_valid([pr])
+      [pr_actions]
+    end
+  else -- make sure all regions are unmapped in inner tasks
+    actions = quote
+      [actions];
+      c.legion_runtime_unmap_all_regions([cx.runtime], [cx.context])
+    end
   end
 
   return values.value(expr.just(actions, r), region_type)
@@ -3342,13 +3352,76 @@ function codegen.expr_list_duplicate_partition(cx, node)
       __data = data,
       __partition = [partition.value].impl,
     }
+
+    -- Grab the root region to copy semantic info.
+    var root = c.legion_logical_partition_get_parent_logical_region(
+      [cx.runtime], [cx.context], [partition.value].impl)
+    while c.legion_logical_region_has_parent_logical_partition(
+      [cx.runtime], [cx.context], root)
+    do
+      var part = c.legion_logical_region_get_parent_logical_partition(
+        [cx.runtime], [cx.context], root)
+      root = c.legion_logical_partition_get_parent_logical_region(
+        [cx.runtime], [cx.context], part)
+    end
+
     for i = 0, [indices.value].__size do
       var color = [indices_type:data(indices.value)][i]
       var orig_r = c.legion_logical_partition_get_logical_subregion_by_color(
         [cx.runtime], [cx.context], [partition.value].impl, color)
       var r = c.legion_logical_region_create(
         [cx.runtime], [cx.context], orig_r.index_space, orig_r.field_space)
+      var new_root = c.legion_logical_partition_get_logical_subregion_by_tree(
+        [cx.runtime], [cx.context],
+        orig_r.index_space, orig_r.field_space, r.tree_id)
+
+      -- Attach semantic info.
+      var name : &int8
+      c.legion_logical_region_retrieve_name([cx.runtime], root, &name)
+      regentlib.assert(name ~= nil, "invalid name")
+      c.legion_logical_region_attach_name([cx.runtime], new_root, name)
+
       [expr_type:data(result)][i] = [expr_type.element_type] { impl = r }
+    end
+  end
+
+  return values.value(
+    expr.just(actions, result),
+    expr_type)
+end
+
+function codegen.expr_list_slice_cross_product(cx, node)
+  local product_type = std.as_read(node.product.expr_type)
+  local product = codegen.expr(cx, node.product):read(cx, product_type)
+  local indices_type = std.as_read(node.indices.expr_type)
+  local indices = codegen.expr(cx, node.indices):read(cx, indices_type)
+  local expr_type = std.as_read(node.expr_type)
+  local actions = quote
+    [product.actions]
+    [indices.actions]
+    [emit_debuginfo(node)]
+  end
+
+  local result = terralib.newsymbol(expr_type, "result")
+
+  actions = quote
+    [actions]
+    var data = c.malloc(
+      terralib.sizeof([expr_type.element_type]) * [indices.value].__size)
+    regentlib.assert(data ~= nil, "malloc failed in list_slice_cross_product")
+    var [result] = expr_type {
+      __size = [indices.value].__size,
+      __data = data,
+    }
+    for i = 0, [indices.value].__size do
+      var color = [indices_type:data(indices.value)][i]
+      var ip = c.legion_terra_index_cross_product_get_subpartition_by_color(
+        [cx.runtime], [cx.context],
+        [product.value].product, color)
+      var lp = c.legion_logical_partition_create_by_tree(
+        [cx.runtime], [cx.context], ip,
+        [product.value].impl.field_space, [product.value].impl.tree_id)
+      [expr_type:data(result)][i] = [expr_type.element_type] { impl = lp }
     end
   end
 
@@ -4621,6 +4694,9 @@ function codegen.expr(cx, node)
   elseif node:is(ast.typed.expr.ListDuplicatePartition) then
     return codegen.expr_list_duplicate_partition(cx, node)
 
+  elseif node:is(ast.typed.expr.ListSliceCrossProduct) then
+    return codegen.expr_list_slice_cross_product(cx, node)
+
   elseif node:is(ast.typed.expr.ListCrossProduct) then
     return codegen.expr_list_cross_product(cx, node)
 
@@ -4968,7 +5044,6 @@ function codegen.stat_for_list_vectorized(cx, node)
         symbol = node.symbol,
         value = node.value,
         block = node.orig_block,
-        vectorize = false,
         span = node.span,
         options = node.options,
       })

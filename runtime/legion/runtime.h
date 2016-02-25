@@ -896,7 +896,6 @@ namespace LegionRuntime {
                                  const TaskVariantRegistrar &registrar,
                                  const void *user_data, size_t user_data_size,
                                  CodeDescriptor *realm_desc, 
-                                 CodeDescriptor *inline_desc,
                                  const char *task_name);
       PendingVariantRegistration(const PendingVariantRegistration &rhs);
       ~PendingVariantRegistration(void);
@@ -912,7 +911,6 @@ namespace LegionRuntime {
       void *user_data;
       size_t user_data_size;
       CodeDescriptor *realm_desc; 
-      CodeDescriptor *inline_desc;
       char *logical_task_name; // optional semantic info to attach to the task
     };
 
@@ -949,12 +947,15 @@ namespace LegionRuntime {
       const char* get_name(bool needs_lock = true) const;
       void attach_semantic_information(SemanticTag tag, AddressSpaceID source,
          const void *buffer, size_t size, bool is_mutable, bool send_to_owner);
-      void retrieve_semantic_information(SemanticTag tag,
-                                         const void *&buffer, size_t &size);
+      bool retrieve_semantic_information(SemanticTag tag,
+                                         const void *&buffer, size_t &size,
+                                         bool can_fail, bool wait_until);
       void send_semantic_info(AddressSpaceID target, SemanticTag tag,
                               const void *value, size_t size, bool is_mutable);
-      void send_semantic_request(AddressSpaceID target, SemanticTag tag);
-      void process_semantic_request(SemanticTag tag, AddressSpaceID target);
+      void send_semantic_request(AddressSpaceID target, SemanticTag tag, 
+                               bool can_fail, bool wait_until, UserEvent ready);
+      void process_semantic_request(SemanticTag tag, AddressSpaceID target, 
+                               bool can_fail, bool wait_until, UserEvent ready);
     public:
       inline AddressSpaceID get_owner_space(void) const
         { return get_owner_space(task_id, runtime); }
@@ -993,7 +994,7 @@ namespace LegionRuntime {
     public:
       VariantImpl(Internal *runtime, VariantID vid, TaskImpl *owner, 
                   const TaskVariantRegistrar &registrar, bool ret_val, 
-                  CodeDescriptor *realm_desc, CodeDescriptor *inline_desc,
+                  CodeDescriptor *realm_desc,
                   const void *user_data = NULL, size_t user_data_size = 0);
       VariantImpl(const VariantImpl &rhs);
       ~VariantImpl(void);
@@ -1008,7 +1009,7 @@ namespace LegionRuntime {
       Event dispatch_task(Processor target, SingleTask *task, 
                           Event precondition, int priority,
                           Realm::ProfilingRequestSet &requests);
-      void dispatch_inline(Processor current, Task *task);
+      void dispatch_inline(Processor current, TaskOp *task);
     public:
       Processor::Kind get_processor_kind(bool warn) const;
     public:
@@ -1025,7 +1026,6 @@ namespace LegionRuntime {
       const bool has_return_value; // has a return value
     public:
       CodeDescriptor *const realm_descriptor;
-      CodeDescriptor *const inline_descriptor;
     private:
       ExecutionConstraintSet execution_constraints;
       TaskLayoutConstraintSet   layout_constraints;
@@ -1596,21 +1596,28 @@ namespace LegionRuntime {
       void attach_semantic_information(LogicalPartition handle, SemanticTag tag,
                        const void *buffer, size_t size, bool is_mutable);
     public:
-      void retrieve_semantic_information(TaskID task_id, SemanticTag tag,
-                                         const void *&result, size_t &size);
-      void retrieve_semantic_information(IndexSpace handle, SemanticTag tag,
-                                         const void *&result, size_t &size);
-      void retrieve_semantic_information(IndexPartition handle, SemanticTag tag,
-                                         const void *&result, size_t &size);
-      void retrieve_semantic_information(FieldSpace handle, SemanticTag tag,
-                                         const void *&result, size_t &size);
-      void retrieve_semantic_information(FieldSpace handle, FieldID fid,
+      bool retrieve_semantic_information(TaskID task_id, SemanticTag tag,
+                                         const void *&result, size_t &size,
+                                         bool can_fail, bool wait_until);
+      bool retrieve_semantic_information(IndexSpace handle, SemanticTag tag,
+                                         const void *&result, size_t &size,
+                                         bool can_fail, bool wait_until);
+      bool retrieve_semantic_information(IndexPartition handle, SemanticTag tag,
+                                         const void *&result, size_t &size,
+                                         bool can_fail, bool wait_until);
+      bool retrieve_semantic_information(FieldSpace handle, SemanticTag tag,
+                                         const void *&result, size_t &size,
+                                         bool can_fail, bool wait_until);
+      bool retrieve_semantic_information(FieldSpace handle, FieldID fid,
                                          SemanticTag tag,
-                                         const void *&result, size_t &size);
-      void retrieve_semantic_information(LogicalRegion handle, SemanticTag tag,
-                                         const void *&result, size_t &size);
-      void retrieve_semantic_information(LogicalPartition part, SemanticTag tag,
-                                         const void *&result, size_t &size);
+                                         const void *&result, size_t &size,
+                                         bool can_fail, bool wait_until);
+      bool retrieve_semantic_information(LogicalRegion handle, SemanticTag tag,
+                                         const void *&result, size_t &size,
+                                         bool can_fail, bool wait_until);
+      bool retrieve_semantic_information(LogicalPartition part, SemanticTag tag,
+                                         const void *&result, size_t &size,
+                                         bool can_fail, bool wait_until);
     public:
       FieldID allocate_field(Context ctx, FieldSpace space, 
                              size_t field_size, FieldID fid, 
@@ -1623,16 +1630,13 @@ namespace LegionRuntime {
       void free_fields(Context ctx, FieldSpace space, 
                        const std::set<FieldID> &to_free);
     public:
-      const std::vector<PhysicalRegion>& begin_task(Context ctx);
-      const std::vector<PhysicalRegion>& begin_inline_task(Context ctx);
-      void end_task(Context ctx, const void *result, size_t result_size,
+      const std::vector<PhysicalRegion>& begin_task(TaskOp *task);
+      void end_task(TaskOp *task, const void *result, size_t result_size,
                     bool owned);
-      void end_inline_task(Context ctx, const void *result, size_t result_size,
-                           bool owned);
       TaskID generate_dynamic_task_id(void);
       VariantID register_variant(const TaskVariantRegistrar &registrar,
                                  const void *user_data, size_t user_data_size,
-                                 CodeDescriptor *realm, CodeDescriptor *indesc,
+                                 CodeDescriptor *realm,
                                  bool ret, VariantID vid = AUTO_GENERATE_ID,
                                  bool check_task_id = true);
       TaskImpl* find_or_create_task_impl(TaskID task_id);
@@ -1992,7 +1996,8 @@ namespace LegionRuntime {
       Event issue_runtime_meta_task(const void *args, size_t arglen,
                                     HLRTaskID tid, Operation *op = NULL,
                                     Event precondition = Event::NO_EVENT, 
-                                    int priority = 0,
+                                    int priority = 0, 
+                                    bool holds_reservation = false,
                                     Processor proc = Processor::NO_PROC);
     public:
       void allocate_context(SingleTask *task);
@@ -2463,7 +2468,7 @@ namespace LegionRuntime {
       static VariantID preregister_variant(
                       const TaskVariantRegistrar &registrar,
                       const void *user_data, size_t user_data_size,
-                      CodeDescriptor *realm_desc, CodeDescriptor *inline_desc,
+                      CodeDescriptor *realm_desc,
                       bool has_ret, const char *task_name,bool check_id = true);
       static PartitionProjectionFnptr 
                     find_partition_projection_function(ProjectionID pid);
