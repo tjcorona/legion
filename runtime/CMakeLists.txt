@@ -20,22 +20,9 @@ set(runtime_SOURCES
   lowlevel_dma.cc
   )
 
-#add_library(runtime ${runtime_SOURCES})
-#target_include_directories(runtime
-#  PRIVATE
-#    ${CMAKE_SOURCE_DIR}/runtime
-#    ${CMAKE_SOURCE_DIR}/runtime/legion
-#    ${CMAKE_SOURCE_DIR}/runtime/realm)
-
 set ( PACKAGE_LIB_DESTINATION "${CMAKE_INSTALL_PREFIX}/lib")
 set ( PACKAGE_BIN_DESTINATION "${CMAKE_INSTALL_PREFIX}/bin")
 set ( PACKAGE_INCLUDE_DESTINATION "${CMAKE_INSTALL_PREFIX}/include")
-
-#install(TARGETS runtime EXPORT legion_TARGETS
-#  ARCHIVE DESTINATION ${PACKAGE_LIB_DESTINATION}
-#  LIBRARY DESTINATION ${PACKAGE_LIB_DESTINATION}
-#  RUNTIME DESTINATION ${PACKAGE_BIN_DESTINATION}
-#)
 
 foreach (file ${runtime_HEADERS})
    install (FILES ${file} DESTINATION ${PACKAGE_INCLUDE_DESTINATION})

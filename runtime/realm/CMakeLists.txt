@@ -16,6 +16,9 @@ set(realm_HEADERS
   dynamic_table.inl
   event.h
   event_impl.h
+  event_impl.inl
+  faults.h
+  faults.inl
   id.h
   id.inl
   idx_impl.h
@@ -62,6 +65,7 @@ set(realm_SOURCES
   cmdline.cc
   codedesc.cc
   event_impl.cc
+  faults.cc
   idx_impl.cc
   inst_impl.cc
   logging.cc

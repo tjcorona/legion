@@ -201,15 +201,7 @@ install(FILES ${CMAKE_BINARY_DIR}/LegionConfig.cmake.install
   DESTINATION ${ConfigPackageLocation}
   RENAME LegionConfig.cmake
   )
-#install(
-#  FILES
-#    cmake/LegionConfig.cmake.in
-#    "${CMAKE_CURRENT_BINARY_DIR}/LegionConfigVersion.cmake"
-#  DESTINATION
-#    ${ConfigPackageLocation}
-#  COMPONENT
-#    Devel
-#)
+
 #------------------------------------------------------------------------------#
 # vim: set tabstop=2 shiftwidth=2 expandtab :
 #------------------------------------------------------------------------------#
