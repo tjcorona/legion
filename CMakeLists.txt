@@ -193,7 +193,7 @@ install(EXPORT legion_TARGETS
     ${ConfigPackageLocation}
 )
 configure_file(
-  ${CMAKE_SOURCE_DIR}/CMake/LegionConfig.cmake.in
+  ${CMAKE_SOURCE_DIR}/cmake/LegionConfig.cmake.in
   ${CMAKE_BINARY_DIR}/LegionConfig.cmake.install
   @ONLY IMMEDIATE
   )
