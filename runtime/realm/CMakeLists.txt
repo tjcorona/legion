@@ -105,6 +105,7 @@ target_include_directories(realm
     ${CMAKE_SOURCE_DIR}/runtime
     ${CMAKE_SOURCE_DIR}/runtime/legion
     ${CMAKE_SOURCE_DIR}/runtime/realm)
+target_link_libraries(realm ${LIBDL_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
 
 set ( PACKAGE_LIB_DESTINATION "${CMAKE_INSTALL_PREFIX}/lib")
 set ( PACKAGE_BIN_DESTINATION "${CMAKE_INSTALL_PREFIX}/bin")

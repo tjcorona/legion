@@ -68,12 +68,10 @@ endif(ENABLE_GASNET)
 #------------------------------------------------------------------------------#
 # LIBRARIES configuration
 #------------------------------------------------------------------------------#
-if (NOT APPLE)
-option(USE_LIBDL "Use libdl" ON)
-if (USE_LIBDL)
- set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ldl")
-endif (USE_LIBDL)
 
+find_package(LibDL)
+
+if (NOT APPLE)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -lrt")
 endif()
 
