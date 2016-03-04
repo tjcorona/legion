@@ -132,6 +132,7 @@ namespace LegionRuntime {
       children_commit_invoked = false;
       local_cached = false;
       arg_manager = NULL;
+      must_epoch = NULL;
       orig_proc = Processor::NO_PROC; // for is_remote
     }
 
@@ -178,6 +179,15 @@ namespace LegionRuntime {
       deleted_field_spaces.clear();
       deleted_index_spaces.clear();
       parent_req_indexes.clear();
+    }
+
+    //--------------------------------------------------------------------------
+    void TaskOp::set_must_epoch(MustEpochOp *epoch, unsigned index,
+                                bool do_registration)
+    //--------------------------------------------------------------------------
+    {
+      Operation::set_must_epoch(epoch, do_registration);
+      must_epoch_index = index;
     }
 
     //--------------------------------------------------------------------------
@@ -451,6 +461,7 @@ namespace LegionRuntime {
       assert(impl != NULL);
 #endif
       const size_t result_size = impl->get_untyped_size();
+#ifdef PERFORM_PREDICATE_SIZE_CHECKS
       if (result_size != variants->return_size)
       {
         log_run.error("Predicated task launch for task %s "
@@ -465,6 +476,7 @@ namespace LegionRuntime {
 #endif
         exit(ERROR_PREDICATE_RESULT_SIZE_MISMATCH);
       }
+#endif
       return result_size;
     }
 
@@ -1509,8 +1521,10 @@ namespace LegionRuntime {
     {
       // From Operation
       this->parent_ctx = rhs->parent_ctx;
+      // Don't register this an operation when setting the must epoch info
       if (rhs->must_epoch != NULL)
-        this->set_must_epoch(rhs->must_epoch, this->must_epoch_index);
+        this->set_must_epoch(rhs->must_epoch, rhs->must_epoch_index,
+                             false/*do registration*/);
       // From Task
       this->task_id = rhs->task_id;
       this->indexes = rhs->indexes;
@@ -6256,6 +6270,7 @@ namespace LegionRuntime {
           }
           else
           {
+#ifdef PERFORM_PREDICATE_SIZE_CHECKS
             if (predicate_false_size != variants->return_size)
             {
               log_run.error("Predicated task launch for task %s "
@@ -6270,6 +6285,7 @@ namespace LegionRuntime {
 #endif
               exit(ERROR_PREDICATE_RESULT_SIZE_MISMATCH);
             }
+#endif
 #ifdef DEBUG_HIGH_LEVEL
             assert(predicate_false_result == NULL);
 #endif
@@ -6386,7 +6402,7 @@ namespace LegionRuntime {
       // Top-level tasks never do dependence analysis, so we
       // need to complete those stages now
       resolve_speculation();
-    }
+    } 
 
     //--------------------------------------------------------------------------
     void IndividualTask::trigger_dependence_analysis(void)
@@ -6632,6 +6648,22 @@ namespace LegionRuntime {
       // Then clean up this task instance
       if (trigger)
         complete_execution();
+      // "mapping" does not change the physical state
+      for (unsigned idx = 0; idx < regions.size(); idx++)
+      {
+        RegionRequirement &req = regions[idx];
+	VersionInfo &version_info = version_infos[idx];
+	RegionTreeContext req_ctx =
+	  parent_ctx->find_enclosing_context(parent_req_indexes[idx]);
+	// don't bother if this wasn't going to change mapping state anyway
+	// only requirements with write privileges bump version numbers
+	if(!IS_WRITE(req))
+	  continue;
+	version_info.apply_mapping(req_ctx.get_id(),
+				   runtime->address_space,
+				   map_applied_conditions,
+				   true /*copy previous*/);
+      }      
       complete_mapping();
       trigger_children_complete();
     }
@@ -6924,6 +6956,8 @@ namespace LegionRuntime {
           children_commit_invoked = true;
         }
       }
+      if (must_epoch != NULL)
+        must_epoch->notify_subop_complete(this);
       // Mark that this operation is complete
       complete_operation();
       if (need_commit)
@@ -6946,6 +6980,8 @@ namespace LegionRuntime {
       {
         it->release();
       }
+      if (must_epoch != NULL)
+        must_epoch->notify_subop_commit(this);
       commit_operation();
       // Finally we can deactivate this task now that it has commited
       deactivate();
@@ -7763,7 +7799,7 @@ namespace LegionRuntime {
     InstanceRef PointTask::find_restricted_instance(unsigned index)
     //--------------------------------------------------------------------------
     {
-      return slice_owner->find_restricted_instance(index);
+      return slice_owner->find_restricted_instance(index,regions[index].region);
     }
 
     //--------------------------------------------------------------------------
@@ -8804,6 +8840,7 @@ namespace LegionRuntime {
         }
         else
         {
+#ifdef PERFORM_PREDICATE_SIZE_CHECKS
           if (predicate_false_size != variants->return_size)
           {
             log_run.error("Predicated index task launch for task %s "
@@ -8818,6 +8855,7 @@ namespace LegionRuntime {
 #endif
             exit(ERROR_PREDICATE_RESULT_SIZE_MISMATCH);
           }
+#endif
 #ifdef DEBUG_HIGH_LEVEL
           assert(predicate_false_result == NULL);
 #endif
@@ -9184,6 +9222,7 @@ namespace LegionRuntime {
       // Then clean up this task execution
       if (trigger)
         complete_execution();
+      assert(0 && "TODO: advance mapping states if you care");
       complete_mapping();
       trigger_children_complete();
     }
@@ -9336,7 +9375,8 @@ namespace LegionRuntime {
       }
       else
         future_map.impl->complete_all_futures();
-
+      if (must_epoch != NULL)
+        must_epoch->notify_subop_complete(this);
       complete_operation();
       if (speculation_state == RESOLVE_FALSE_STATE)
         trigger_children_committed();
@@ -9352,6 +9392,8 @@ namespace LegionRuntime {
       {
         it->release();
       }
+      if (must_epoch != NULL)
+        must_epoch->notify_subop_commit(this);
       // Mark that this operation is now committed
       commit_operation();
       // Now we get to deactivate this task
@@ -9538,7 +9580,8 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    InstanceRef IndexTask::find_restricted_instance(unsigned index)
+    InstanceRef IndexTask::find_restricted_instance(unsigned index, 
+                                                    LogicalRegion target)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -9548,7 +9591,12 @@ namespace LegionRuntime {
       InstanceRef parent_ref = 
         parent_ctx->get_local_reference(parent_req_indexes[index]);
       // Now get the proper sub-view for our privilege path
-      return privilege_paths[index].translate_ref(parent_ref);
+      // Translate down from where the parent task had privileges
+      // down to where the target region is
+      RegionTreePath translate_path;
+      runtime->forest->initialize_path(target.get_index_space(),
+                     regions[index].parent.get_index_space(), translate_path);
+      return translate_path.translate_ref(parent_ref);
     }
 
     //--------------------------------------------------------------------------
@@ -10457,7 +10505,8 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    InstanceRef SliceTask::find_restricted_instance(unsigned index)
+    InstanceRef SliceTask::find_restricted_instance(unsigned index,
+                                                    LogicalRegion target)
     //--------------------------------------------------------------------------
     {
       if (is_remote())
@@ -10468,7 +10517,7 @@ namespace LegionRuntime {
       }
       else
       {
-        return index_owner->find_restricted_instance(index);
+        return index_owner->find_restricted_instance(index, target);
       }
     }
 

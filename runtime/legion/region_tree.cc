@@ -2659,10 +2659,12 @@ namespace LegionRuntime {
     }
 
     //--------------------------------------------------------------------------
-    void RegionTreeForest::fill_fields(RegionTreeContext ctx,
-                                       const RegionRequirement &req,
-                                       const void *value, size_t value_size,
-                                       VersionInfo &version_info)
+    Event RegionTreeForest::fill_fields(RegionTreeContext ctx, Operation *op,
+                                        const RegionRequirement &req,
+                                        const void *value, size_t value_size,
+                                        VersionInfo &version_info,
+                                        RestrictInfo &restrict_info,
+                                        MappingRef &map_ref, Event precondition)
     //--------------------------------------------------------------------------
     {
 #ifdef DEBUG_HIGH_LEVEL
@@ -2671,9 +2673,42 @@ namespace LegionRuntime {
       RegionNode *fill_node = get_node(req.region);
       FieldMask fill_mask = 
         fill_node->column_source->get_field_mask(req.privilege_fields);
-      // Fill in these fields on this node
-      fill_node->fill_fields(ctx.get_id(), fill_mask, 
-                             value, value_size, version_info); 
+      // Check to see if we have any restricted fields that
+      // we need to fill eagerly
+      if (restrict_info.has_restrictions())
+      {
+#ifdef DEBUG_HIGH_LEVEL
+        assert(map_ref.has_ref());
+#endif
+        // If we have restrictions, we have to eagerly fill these fields 
+        FieldMask eager_fields;
+        restrict_info.populate_restrict_fields(eager_fields);
+        LogicalView *view = map_ref.get_view();
+#ifdef DEBUG_HIGH_LEVEL
+        assert(view->is_instance_view());
+#endif
+        InstanceView *inst_view = view->as_instance_view();
+        Event done_event = fill_node->eager_fill_fields(ctx.get_id(), op, 
+                           eager_fields, value, value_size, version_info, 
+                           inst_view, precondition);
+        // Remove these fields from the fill set
+        fill_mask -= eager_fields;
+        // If we still have fields to fill, do that now
+        if (!!fill_mask)
+          fill_node->fill_fields(ctx.get_id(), fill_mask,
+                                 value, value_size, version_info);
+        // We know the sync precondition is chained off at least
+        // one eager fill so we can return the done event
+        return done_event;
+      }
+      else
+      {
+        // Fill in these fields on this node
+        fill_node->fill_fields(ctx.get_id(), fill_mask, 
+                               value, value_size, version_info); 
+        // We didn't actually use the precondition so just return it
+        return precondition;
+      }
     }
 
     //--------------------------------------------------------------------------
@@ -6955,6 +6990,10 @@ namespace LegionRuntime {
       {
         IndexSpace is(context->runtime->get_unique_index_space_id(),
                       handle.get_tree_id());
+
+        if (Internal::legion_spy_enabled)
+          LegionSpy::log_index_subspace(handle.id, is.id, c.get_point());
+
         if (parent->kind == UNSTRUCTURED_KIND)
         {
           // Make a new sub-index space first based on the 
@@ -11418,9 +11457,8 @@ namespace LegionRuntime {
                     // Create a new FieldState open in whatever mode is
                     // appropriate based on the usage
                     FieldState new_state(closer.user, already_open, next_child);
-                    // Note if it is another reduction in the same child
-                    if (IS_REDUCE(closer.user.usage))
-                      new_state.open_state = OPEN_READ_WRITE;
+                    // We always have to go to read-write mode here
+                    new_state.open_state = OPEN_READ_WRITE;
                     new_states.push_back(new_state);
                   }
                 }
@@ -12103,6 +12141,8 @@ namespace LegionRuntime {
             if (!overlap)
               continue;
             num_states++;
+            // Add a valid reference for when it is in transit
+            it->first->add_base_valid_ref(REMOTE_DID_REF);
             state_rez.serialize(it->first->did);
             state_rez.serialize(it->first->owner_space);
             state_rez.serialize(overlap);
@@ -12133,6 +12173,8 @@ namespace LegionRuntime {
             if (!overlap)
               continue;
             num_states++;
+            // Add a valid reference for when it is in transit
+            it->first->add_base_valid_ref(REMOTE_DID_REF);
             state_rez.serialize(it->first->did);
             state_rez.serialize(it->first->owner_space);
             state_rez.serialize(overlap);
@@ -12231,6 +12273,8 @@ namespace LegionRuntime {
           else
             finder->second |= state_mask;
           info.valid_fields |= state_mask;
+          // No matter what remove our base valid reference
+          version_state->send_remote_valid_update(source, 1, false/*add*/);
         }
       }
       unsigned num_previous;
@@ -12263,6 +12307,8 @@ namespace LegionRuntime {
           else
             finder->second |= state_mask;
           info.valid_fields |= state_mask;
+          // No matter what remove our base valid reference
+          version_state->send_remote_valid_update(source, 1, false/*add*/);
         }
       }
       unsigned num_reduc;
@@ -13981,6 +14027,7 @@ namespace LegionRuntime {
           assert(!(finder->second - (*it)->as_instance_view()->
                 as_materialized_view()->manager->layout->allocated_fields));
         }
+        assert((*it)->logical_node == this);
 #endif
       }
     }
@@ -14021,6 +14068,7 @@ namespace LegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
         finder = state->valid_views.find(*it);
         assert(!(finder->second - (*it)->manager->layout->allocated_fields));
+        assert((*it)->logical_node == this);
 #endif
       }
     }
@@ -15398,6 +15446,7 @@ namespace LegionRuntime {
 #ifdef DEBUG_HIGH_LEVEL
       assert(view != NULL);
       assert(view->is_instance_view());
+      assert(view->logical_node == this);
 #endif
       InstanceView *inst_view = view->as_instance_view();
       // This mirrors the if-else statement in MappingTraverser::visit_region
@@ -15668,6 +15717,66 @@ namespace LegionRuntime {
       if (!(fill_mask * state->reduction_mask))
         invalidate_reduction_views(state, fill_mask);
       update_valid_views(state, fill_mask, true/*dirty*/, fill_view);
+    }
+
+    //--------------------------------------------------------------------------
+    Event RegionNode::eager_fill_fields(ContextID ctx, Operation *op,
+                                        const FieldMask &fill_mask,
+                                        const void *value, size_t value_size,
+                                VersionInfo &version_info, InstanceView *target,
+                                        Event sync_precondition)
+    //--------------------------------------------------------------------------
+    {
+      // Effectively a fill is a special kind of copy so we can analyze
+      // it the same way to figure out how to issue the fill
+      LegionMap<Event,FieldMask>::aligned preconditions;
+      target->find_copy_preconditions(0/*redop*/, false/*reading*/,
+                                      fill_mask, version_info, preconditions);
+      // Get the domains we need for this copy 
+      std::set<Domain> fill_domains;
+      Event dom_pre = Event::NO_EVENT;
+      if (has_component_domains())
+        fill_domains = get_component_domains(dom_pre);
+      else
+        fill_domains.insert(get_domain(dom_pre));
+      if (dom_pre.exists())
+        preconditions[dom_pre] = fill_mask;
+      if (sync_precondition.exists())
+        preconditions[sync_precondition] = fill_mask;
+      // Sort the preconditions into event sets
+      LegionList<EventSet>::aligned event_sets;
+      compute_event_sets(fill_mask, preconditions, event_sets);
+      std::set<Event> post_events;
+      // Iterate over the event sets and issue the fill operations on 
+      // the different fields
+      UniqueID op_id = op->get_unique_op_id();
+      for (LegionList<EventSet>::aligned::const_iterator pit = 
+            event_sets.begin(); pit != event_sets.end(); pit++)
+      {
+        Event precondition = Event::merge_events(pit->preconditions);
+        std::vector<Domain::CopySrcDstField> dst_fields;
+        target->copy_to(pit->set_mask, dst_fields);
+        for (std::set<Domain>::const_iterator it = fill_domains.begin();
+              it != fill_domains.end(); it++)
+        {
+          post_events.insert(context->issue_fill(*it, op_id, dst_fields,
+                                                 value, value_size,
+                                                 precondition));
+        }
+      }
+      // Add user to make record when everyone is done writing
+      target->add_copy_user(0/*redop*/, op->get_completion_event(),
+                            version_info, fill_mask, false/*reading*/);
+      // Finally do the update to the physical state like a normal fill
+      PhysicalState *state = get_physical_state(ctx, version_info);
+      // Invalidate any open children and any reductions
+      if (!(fill_mask * state->children.valid_fields))
+        state->filter_open_children(fill_mask); 
+      if (!(fill_mask * state->reduction_mask))
+        invalidate_reduction_views(state, fill_mask);
+      update_valid_views(state, fill_mask, true/*dirty*/, target);
+      // Return the merge of all the post events
+      return Event::merge_events(post_events);
     }
 
     //--------------------------------------------------------------------------
